@@ -1,12 +1,19 @@
 /**
  * @file supportService.js
- * @description Service for Gaza Support automation
+ * @description Main service for Gaza Support automation
  */
 
 const fs = require('fs-extra');
 const path = require('path');
 const menu = require('../ui/menu');
 const browserService = require('./browser');
+
+// Import modular services
+const VideoService = require('./support/videoService');
+const EngagementService = require('./support/engagementService');
+const NavigationService = require('./support/navigationService');
+const AdService = require('./support/adService');
+const DataService = require('./support/dataService');
 
 /**
  * Support service for Gaza YouTube channel support
@@ -15,9 +22,23 @@ class SupportService {
   constructor() {
     this.browser = browserService;
     this.menu = menu;
-    this.channelsPath = path.resolve(__dirname, '../data/gazaSupport/channels.json');
-    this.commentsPath = path.resolve(__dirname, '../data/gazaSupport/comments.json');
-    this.settingsPath = path.resolve(__dirname, '../data/gazaSupport/settings.json');
+    
+    // Initialize paths
+    const dataPath = path.resolve(__dirname, '../data/gazaSupport');
+    this.channelsPath = path.join(dataPath, 'channels.json');
+    this.commentsPath = path.join(dataPath, 'comments.json');
+    this.settingsPath = path.join(dataPath, 'settings.json');
+    
+    // Initialize service modules
+    this.videoService = new VideoService(this.browser);
+    this.engagementService = new EngagementService(this.browser);
+    this.navigationService = new NavigationService(this.browser);
+    this.adService = new AdService(this.browser);
+    this.dataService = new DataService({
+      channelsPath: this.channelsPath,
+      commentsPath: this.commentsPath,
+      settingsPath: this.settingsPath
+    });
   }
   
   /**
@@ -70,9 +91,9 @@ class SupportService {
       }
       
       // Load channels and settings
-      const channels = await this.loadChannels();
-      const settings = await this.loadSettings();
-      const comments = await this.loadComments();
+      const channels = await this.dataService.loadChannels();
+      const settings = await this.dataService.loadSettings();
+      const comments = await this.dataService.loadComments();
       
       if (channels.length === 0) {
         console.log('\nu274c No channels found! Please add some channels first.');
@@ -124,7 +145,7 @@ class SupportService {
           supportCount++;
           
           // Save updated channel data
-          await this.saveChannels(channels);
+          await this.dataService.saveChannels(channels);
           
           console.log(`\nu2705 Successfully supported ${channel.name}!`);
         } else {
@@ -191,361 +212,52 @@ class SupportService {
         return false;
       }
       
-      // Navigate directly to the videos page of the channel
-      const videosUrl = channel.url + '/videos';
-      console.log(`\nNavigating directly to videos page: ${videosUrl}`);
-      await page.goto(videosUrl, { waitUntil: 'networkidle2' });
+      // Navigate to the channel's videos page
+      console.log(`\nNavigating to channel: ${channel.url}`);
+      const success = await this.navigationService.navigateToChannelVideos(page, channel.url);
       
-      // Find the latest video
-      console.log('Looking for latest video...');
-      
-      // Wait for videos to load
-      console.log('Waiting for page to fully load...');
-      await this.sleep(5000);
-      
-      // Find video URL using a simplified approach
-      console.log('Finding the latest video...');
-      const videoUrl = await page.evaluate(() => {
-        // Try to find a video thumbnail from rich item renderer (new YouTube UI)
-        const thumbnails = document.querySelectorAll('ytd-rich-item-renderer a#thumbnail[href*="/watch"]');
-        if (thumbnails && thumbnails.length > 0) {
-          return thumbnails[0].href;
-        }
-        
-        // Fallback to any video link
-        const videoLinks = Array.from(document.querySelectorAll('a[href*="/watch"]'))
-          .filter(link => link.href.includes('youtube.com/watch?v='));
-          
-        return videoLinks.length > 0 ? videoLinks[0].href : null;
-      });
-      
-      // Check if we found a video
-      if (!videoUrl) {
-        console.log('Failed to find any videos on this channel.');
+      if (!success) {
+        console.log('Failed to navigate to channel videos page');
         return false;
       }
       
-      console.log('Found video URL: ' + videoUrl);
-      const latestVideo = { href: videoUrl, title: 'Latest video' };
-      
-      // Navigate to the video with a longer timeout
-      console.log('Navigating to video...');
-      await page.goto(latestVideo.href, { waitUntil: 'networkidle2', timeout: 60000 });
-      
-      // Check for and skip ads
-      console.log('Checking for ads...');
-      await this.skipAdsIfPresent(page);
-      
-      // Get video details and calculate watch time
-      console.log('Getting video details...');
-      const videoDetails = await this.getVideoDetails(page);
-      console.log(`Video duration: ${videoDetails.durationText} (${videoDetails.durationSeconds} seconds)`);
-      
-      // Calculate watch time based on settings and actual duration
-      const watchTimePercentage = settings.watchTimePercentage / 100;
-      let targetWatchTime = Math.floor(videoDetails.durationSeconds * watchTimePercentage);
-      
-      // Apply min/max boundaries from settings
-      targetWatchTime = Math.max(
-        Math.min(settings.minWatchTimeSeconds, videoDetails.durationSeconds), // Don't watch longer than the video if it's shorter than min
-        Math.min(targetWatchTime, settings.maxWatchTimeSeconds) // Don't exceed max watch time
-      );
-      
-      console.log(`Will watch for ${targetWatchTime} seconds (${Math.floor(targetWatchTime/videoDetails.durationSeconds * 100)}% of video)`);
-      
-      // First make sure video is at the beginning
-      console.log('Ensuring video starts from the beginning...');
-      await page.evaluate(() => {
-        // Get the video element
-        const video = document.querySelector('video.html5-main-video');
-        if (video) {
-          // Force seek to the beginning
-          video.currentTime = 0;
-          // Try to play the video
-          if (video.paused) {
-            video.play().catch(() => console.log('Could not autoplay video'));
-          }
-        }
-      });
-      await this.sleep(1000);
-      
-      // Verify we're at the beginning of the video
-      const videoPosition = await page.evaluate(() => {
-        const video = document.querySelector('video.html5-main-video');
-        return video ? video.currentTime : 0;
-      });
-      console.log(`Current video position: ${videoPosition} seconds`);
-      
-      if (videoPosition > 10) {
-        console.log('Warning: Video not starting from beginning! Attempting to correct...');
-        await page.evaluate(() => {
-          const video = document.querySelector('video.html5-main-video');
-          if (video) {
-            video.currentTime = 0;
-          }
-        });
-        await this.sleep(1000);
+      // Find the latest video
+      const videoUrl = await this.navigationService.findLatestVideo(page);
+      if (!videoUrl) {
+        console.log('Failed to find any videos on this channel');
+        return false;
       }
       
-      // Subscribe to the channel if enabled (do this first, most important)
+      // Navigate to the video
+      console.log('Navigating to video: ' + videoUrl);
+      await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      
+      // Skip ads if present
+      await this.adService.skipAdsIfPresent(page);
+      
+      // Get video details
+      const videoDetails = await this.videoService.getVideoDetails(page);
+      
+      // Calculate watch time
+      const watchTime = this.videoService.calculateWatchTime(videoDetails, settings);
+      console.log(`Will watch for ${watchTime} seconds`);
+      
+      // Subscribe to channel if enabled
       if (settings.subscribeToChannels) {
-        console.log('Subscribing to the channel...');
-        try {
-          // Much more robust subscribe method
-          const subscribed = await page.evaluate(() => {
-            // Try multiple selector approaches
-            const selectors = [
-              'button[aria-label*="Subscribe"]',
-              'yt-button-renderer[aria-label*="Subscribe"]',
-              'ytd-subscribe-button-renderer',
-              '#subscribe-button' // Common container ID
-            ];
-            
-            for (const selector of selectors) {
-              const elements = document.querySelectorAll(selector);
-              for (const element of elements) {
-                if (element && element.offsetParent !== null) {
-                  try {
-                    // Trigger click event
-                    element.click();
-                    return true;
-                  } catch (e) {
-                    console.log('Failed to click, trying another element');
-                  }
-                }
-              }
-            }
-            return false;
-          });
-          
-          if (subscribed) {
-            console.log('Successfully subscribed to channel!');
-          } else {
-            console.log('Could not find subscribe button, might already be subscribed');
-          }
-        } catch (error) {
-          console.log(`Subscribe error: ${error.message}`);
-        }
+        await this.engagementService.subscribeToChannel(page);
       }
       
-      // Like the video before scrolling for comments
+      // Like video if enabled
       if (settings.likeVideos) {
-        console.log('Attempting to like the video with precise selectors...');
-        
-        try {
-          // Make sure we're at the right position to see the video controls
-          await page.evaluate(() => {
-            // Scroll to position where like button should be visible but not into comments
-            window.scrollTo(0, 200);
-          });
-          
-          // Wait for the like button to appear, using the specific selectors you requested
-          await page.waitForSelector('button[title="I like this"], button[aria-label^="like this video"], button[aria-label^="Like"], ytd-toggle-button-renderer[aria-label^="Like"]', 
-            { visible: true, timeout: 5000 }).catch(() => {});
-            
-          // Small delay for UI to stabilize
-          await this.sleep(1000);
-          
-          // Check if already liked and click only if not already liked
-          const likingResult = await page.evaluate(() => {
-            // Try multiple selectors focused on exact attributes
-            const likeButtonSelectors = [
-              'button[title="I like this"]',
-              'button[aria-label^="like this video"]',
-              'button[aria-label^="Like"]',
-              'ytd-toggle-button-renderer[aria-label^="Like"]',
-              '#top-level-buttons-computed ytd-toggle-button-renderer:first-child button'
-            ];
-            
-            for (const selector of likeButtonSelectors) {
-              const buttons = document.querySelectorAll(selector);
-              for (const button of buttons) {
-                // Critical: Check if button is already pressed/liked
-                const isAlreadyLiked = button.getAttribute('aria-pressed') === 'true';
-                const isVisible = button.offsetWidth > 0 && button.offsetHeight > 0;
-                
-                if (isVisible && !isAlreadyLiked) {
-                  // Only click if not already liked
-                  try {
-                    button.click();
-                    return { success: true, message: `Clicked ${selector}` };
-                  } catch (e) {
-                    // Continue to next button if this one fails
-                  }
-                } else if (isVisible && isAlreadyLiked) {
-                  return { success: true, message: 'Video is already liked' };
-                }
-              }
-            }
-            return { success: false, message: 'No suitable like button found' };
-          });
-          
-          console.log(likingResult.message);
-        } catch (error) {
-          console.log(`Error while liking video: ${error.message}`);
-        }
+        await this.engagementService.likeVideo(page);
       }
       
-      // Now scroll down to comment section
-      console.log('Scrolling to comment section...');
-      await page.evaluate(() => {
-        // Scroll about halfway down the page to find comments
-        window.scrollBy(0, window.innerHeight);
-      });
-      await this.sleep(1500);
+      // Leave a comment
+      const randomComment = this.engagementService.getRandomComment(comments);
+      await this.engagementService.leaveComment(page, randomComment);
       
-      // Leave a comment early in the process
-      console.log('Leaving a comment early...');
-      const commentSuccess = await this.leaveComment(page, comments);
-      
-      // Like the video if enabled (do this early too)
-      if (settings.likeVideos) {
-        console.log('Liking the video...');
-        try {
-          const likeButton = await page.$('button[aria-label^="Like"][aria-pressed="false"]');
-      
-          if (likeButton) {
-            await likeButton.click();
-            console.log('Successfully liked the video!');
-          } else {
-            console.log('Like button not found or already pressed, trying fallback...');
-      
-            const liked = await page.evaluate(() => {
-              const likeSelectors = [
-                'button[aria-label*="like"]',
-                'ytd-toggle-button-renderer[aria-label*="like"]',
-                '#top-level-buttons-computed ytd-toggle-button-renderer:first-child',
-                'ytd-like-button-renderer'
-              ];
-              
-              for (const selector of likeSelectors) {
-                const elements = document.querySelectorAll(selector);
-                for (const element of elements) {
-                  const ariaPressed = element.getAttribute('aria-pressed');
-                  const visible = element.offsetHeight > 0 && element.offsetWidth > 0;
-      
-                  if (visible && (ariaPressed === null || ariaPressed === 'false')) {
-                    try {
-                      element.click();
-                      return true;
-                    } catch (e) {
-                      console.log('Failed to click like button, trying another');
-                    }
-                  }
-                }
-              }
-              return false;
-            });
-      
-            console.log(liked ? 'Successfully liked the video (fallback).' : 'Like button not clickable or already liked.');
-          }
-        } catch (error) {
-          console.log(`Like error: ${error.message}`);
-        }
-      }
-      
-      // Now start watching the video (scroll back up)
-      console.log('Scrolling back to video and starting watch timer...');
-      await page.evaluate(() => {
-        // Scroll back to top to watch video
-        window.scrollTo(0, 0);
-        
-        // Ensure video is playing from beginning
-        const video = document.querySelector('video.html5-main-video');
-        if (video) {
-          // Force seek to the beginning again
-          video.currentTime = 0;
-          // Try to play if paused
-          if (video.paused) {
-            video.play().catch(() => {});
-          }
-        }
-      });
-      
-      // Store initial video information for comparison
-      const initialVideoId = await page.evaluate(() => {
-        // Extract video ID from URL or player data
-        const url = window.location.href;
-        const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})(?:[\?&]|$)/);
-        return match ? match[1] : '';
-      });
-      
-      console.log(`Started watching video with ID: ${initialVideoId}...`);
-      
-      // Start watching the video with better progress tracking
-      const startTime = Date.now();
-      const checkInterval = 10; // Check progress every 10 seconds
-      let elapsedSeconds = 0;
-      
-      // Watch until target time is reached
-      while (elapsedSeconds < targetWatchTime) {
-        // Wait for specified interval
-        await this.sleep(checkInterval * 1000);
-        
-        // Check video state: current position, duration, and if it has ended
-        const videoState = await page.evaluate(() => {
-          const video = document.querySelector('video.html5-main-video');
-          if (!video) return { error: 'Video element not found' };
-          
-          // Get video metadata
-          const currentTime = video.currentTime;
-          const duration = video.duration;
-          const hasEnded = video.ended;
-          const isPaused = video.paused;
-          
-          // Check if we're at the end of the video
-          const isNearEnd = duration > 0 && (currentTime >= duration - 5);
-          
-          // Get current video ID
-          const url = window.location.href;
-          const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})(?:[\?&]|$)/);
-          const videoId = match ? match[1] : '';
-          
-          return {
-            videoId,
-            currentTime,
-            duration,
-            hasEnded,
-            isPaused,
-            isNearEnd
-          };
-        });
-        
-        // Log current video position for debugging
-        console.log(`Video position: ${Math.floor(videoState.currentTime)}/${Math.floor(videoState.duration)} seconds`);
-        
-        // Check if video ID changed (autoplay to next video)
-        if (videoState.videoId !== initialVideoId && initialVideoId !== '') {
-          console.log(`Video changed from ${initialVideoId} to ${videoState.videoId}. Ending watch session.`);
-          break;
-        }
-        
-        // Check if video has ended or is very close to ending
-        if (videoState.hasEnded || videoState.isNearEnd) {
-          console.log('Video has ended or is near the end. Stopping watch timer.');
-          break;
-        }
-        
-        // If video is paused, try to resume playback
-        if (videoState.isPaused) {
-          console.log('Video is paused. Attempting to resume...');
-          await page.evaluate(() => {
-            const video = document.querySelector('video.html5-main-video');
-            if (video && video.paused) {
-              video.play().catch(() => console.log('Could not resume video'));
-            }
-          });
-        }
-        
-        // Skip ads if they appear during playback
-        await this.skipAdsIfPresent(page);
-        
-        // Update elapsed time
-        elapsedSeconds += checkInterval;
-        console.log(`Watched ${elapsedSeconds}/${targetWatchTime} seconds (${Math.floor(elapsedSeconds/targetWatchTime * 100)}% complete)`);
-      }
-      
-      console.log('Finished watching video!');
+      // Watch the video
+      await this.videoService.watchVideo(page, watchTime);
       
       return true;
     } catch (error) {
@@ -979,11 +691,11 @@ class SupportService {
   }
   
   /**
-   * Sleep for specified milliseconds
+   * Sleep for a specified time
    * @param {number} ms - Milliseconds to sleep
-   * @returns {Promise} Sleep promise
+   * @returns {Promise<void>}
    */
-  sleep(ms) {
+  async sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
