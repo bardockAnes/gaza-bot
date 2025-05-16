@@ -22,7 +22,12 @@ module.exports = {
       '--start-maximized',      // Launch with maximized window
       '--no-sandbox',           // Disable sandbox for compatibility
       '--disable-blink-features=AutomationControlled', // Hide automation flags
-      '--disable-notifications' // Block notification prompts
+      '--disable-notifications', // Block notification prompts
+      
+      // Anti-throttling settings for background tabs
+      '--disable-background-timer-throttling',    // Prevent timers from being throttled in background tabs
+      '--disable-backgrounding-occluded-windows', // Prevent backgrounding when tab is not visible
+      '--disable-renderer-backgrounding'          // Prevent renderer from being throttled when in background
     ],
     
     // Default arguments to ignore
@@ -32,6 +37,13 @@ module.exports = {
     viewport: {
       width: 1920,
       height: 1080
+    },
+    
+    // Background keep-alive settings
+    backgroundKeepAlive: {
+      enabled: true,     // Whether to enable the background keep-alive mechanism
+      interval: 5000,    // Interval in ms to perform keep-alive actions (5 seconds)
+      focusEvents: true  // Whether to dispatch focus events to keep page active
     }
   },
   
