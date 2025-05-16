@@ -7,6 +7,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const menu = require('../ui/menu');
 const browserService = require('./browser');
+const os = require('os');
 
 /**
  * Support service for Gaza YouTube channel support
@@ -18,6 +19,9 @@ class SupportService {
     this.channelsPath = path.resolve(__dirname, '../data/gazaSupport/channels.json');
     this.commentsPath = path.resolve(__dirname, '../data/gazaSupport/comments.json');
     this.settingsPath = path.resolve(__dirname, '../data/gazaSupport/settings.json');
+    this.reportsDir = path.resolve(__dirname, '../data/gazaSupport/reports');
+    this.sessionPath = path.resolve(__dirname, '../data/gazaSupport/session.json');
+    this.currentReport = null;
   }
   
   /**
@@ -51,9 +55,149 @@ class SupportService {
   /**
    * Start supporting channels
    */
+  /**
+   * Load session data to continue from where it left off
+   * @returns {Promise<Object>} Session data
+   * @private
+   */
+  async _loadSessionData() {
+    try {
+      if (await fs.pathExists(this.sessionPath)) {
+        const session = await fs.readJson(this.sessionPath);
+        console.log(`\nFound previous session from ${new Date(session.timestamp).toLocaleString()}`);
+        return session;
+      }
+    } catch (error) {
+      console.error(`Error loading session data: ${error.message}`);
+    }
+    
+    // Return default session data
+    return {
+      timestamp: new Date().toISOString(),
+      lastProcessedChannelIndex: -1,
+      lastReportPath: null
+    };
+  }
+  
+  /**
+   * Save current session data
+   * @param {Object} sessionData - Session data to save
+   * @private
+   */
+  async _saveSessionData(sessionData) {
+    try {
+      // Update timestamp
+      sessionData.timestamp = new Date().toISOString();
+      await fs.writeJson(this.sessionPath, sessionData, { spaces: 2 });
+    } catch (error) {
+      console.error(`Error saving session data: ${error.message}`);
+    }
+  }
+  
+  /**
+   * Initialize reporting system
+   * @private
+   */
+  async _initializeReporting() {
+    // Ensure reports directory exists
+    await fs.ensureDir(this.reportsDir);
+    
+    // Create a new report file with timestamp
+    const timestamp = new Date().toISOString().replace(/:/g, '-');
+    const reportFileName = `report_${timestamp}.json`;
+    this.currentReportPath = path.join(this.reportsDir, reportFileName);
+    
+    // Initialize report structure
+    this.currentReport = {
+      startTime: new Date().toISOString(),
+      endTime: null,
+      totalChannelsProcessed: 0,
+      totalSuccessful: 0,
+      totalFailed: 0,
+      channelResults: []
+    };
+    
+    // Save initial report
+    await this._saveReport();
+    console.log(`\nCreated new report: ${reportFileName}`);
+  }
+  
+  /**
+   * Save current report to file
+   * @private
+   */
+  async _saveReport() {
+    if (this.currentReport) {
+      // Update end time
+      this.currentReport.endTime = new Date().toISOString();
+      await fs.writeJson(this.currentReportPath, this.currentReport, { spaces: 2 });
+    }
+  }
+  
+  /**
+   * Log an event to current report
+   * @param {string} channelName - Channel name
+   * @param {string} eventType - Event type (start, comment, like, subscribe, watch, success, failure)
+   * @param {Object} details - Event details
+   * @private
+   */
+  async _logEvent(channelName, eventType, details = {}) {
+    if (!this.currentReport) return;
+    
+    // Find the channel entry or create it
+    let channelEntry = this.currentReport.channelResults.find(c => c.channelName === channelName);
+    
+    if (!channelEntry) {
+      channelEntry = {
+        channelName,
+        startTime: new Date().toISOString(),
+        endTime: null,
+        success: false,
+        events: []
+      };
+      this.currentReport.channelResults.push(channelEntry);
+    }
+    
+    // Add the event
+    const event = {
+      timestamp: new Date().toISOString(),
+      type: eventType,
+      ...details
+    };
+    
+    // Add event to channel entry
+    channelEntry.events.push(event);
+    channelEntry.endTime = event.timestamp;
+    
+    // For success/failure events, update channel status
+    if (eventType === 'success') {
+      channelEntry.success = true;
+      this.currentReport.totalSuccessful++;
+    } else if (eventType === 'failure') {
+      channelEntry.success = false;
+      this.currentReport.totalFailed++;
+    }
+    
+    // Save the report after each event
+    await this._saveReport();
+    
+    // Also log to console
+    console.log(`[LOG] ${eventType.toUpperCase()}: ${channelName} - ${details.message || ''}`);
+  }
+
   async startSupporting() {
     try {
       console.log('\nu27a1ufe0f Starting Gaza Support automation...');
+      
+      // Load previous session data
+      const sessionData = await this._loadSessionData();
+      
+      // Initialize reporting system
+      await this._initializeReporting();
+      
+      // Update session with current report path
+      sessionData.lastReportPath = this.currentReportPath;
+      await this._saveSessionData(sessionData);
       
       // Check if browser is initialized
       if (!this.browser.browser) {
@@ -69,8 +213,8 @@ class SupportService {
         return;
       }
       
-      // Load channels and settings
-      const channels = await this.loadChannels();
+      // Load channels and settings (sorted by least supported first)
+      const channels = await this.loadChannels(true);
       const settings = await this.loadSettings();
       const comments = await this.loadComments();
       
@@ -87,6 +231,13 @@ class SupportService {
       }
       
       console.log(`\nFound ${channels.length} channels and ${comments.length} comments.\n`);
+      
+      // Display channel rotation order
+      console.log('Channel rotation order (prioritizing least supported):');
+      channels.forEach((channel, index) => {
+        console.log(`${index + 1}. ${channel.name} (previous support count: ${channel.supportCount || 0})`); 
+      });
+      
       console.log('Ready to start supporting channels!');
       console.log('\n=== Support Settings ===');
       console.log(`Watch time: ${settings.watchTimePercentage}% of video`);
@@ -107,7 +258,27 @@ class SupportService {
       
       // Start supporting channels
       let supportCount = 0;
-      for (const channel of channels) {
+      let startIndex = 0;
+      
+      // Ask if user wants to continue from last session
+      if (sessionData.lastProcessedChannelIndex >= 0 && sessionData.lastProcessedChannelIndex < channels.length - 1) {
+        console.log(`\nPrevious session stopped at channel #${sessionData.lastProcessedChannelIndex + 1} (${channels[sessionData.lastProcessedChannelIndex].name})`);
+        const continueFromLast = await this._getInputWithTimeout('Continue from where you left off? (y/n)', 10, 'y');
+        
+        if (continueFromLast.toLowerCase() === 'y') {
+          startIndex = sessionData.lastProcessedChannelIndex + 1;
+          console.log(`\nContinuing from channel #${startIndex + 1} (${channels[startIndex].name})`);
+        }
+      }
+      
+      for (let i = startIndex; i < channels.length; i++) {
+        const channel = channels[i];
+        
+        // Update session data with current channel index
+        sessionData.lastProcessedChannelIndex = i;
+        await this._saveSessionData(sessionData);
+        // Log start of channel support
+        await this._logEvent(channel.name, 'start', { url: channel.url, previousCount: channel.supportCount || 0 });
         // Show current channel
         console.clear();
         console.log(`\nu27a1ufe0f Supporting channel: ${channel.name}`);
@@ -127,9 +298,18 @@ class SupportService {
           await this.saveChannels(channels);
           
           console.log(`\nu2705 Successfully supported ${channel.name}!`);
+          
+          // Log success in report
+          await this._logEvent(channel.name, 'success', { message: 'Channel supported successfully' });
         } else {
           console.log(`\nu274c Failed to support ${channel.name}.`);
+          
+          // Log failure in report
+          await this._logEvent(channel.name, 'failure', { message: 'Failed to support channel' });
         }
+        
+        // Update session data after each channel
+        await this._saveSessionData(sessionData);
         
         // Ask to continue or exit with 10 second timeout, default to 'y'
         const continueSupport = await this._getInputWithTimeout('Continue to next channel? (y/n)', 10, 'y');
@@ -145,7 +325,16 @@ class SupportService {
         await this.sleep(settings.pauseBetweenChannelsSeconds * 1000);
       }
       
+      // Reset session data since we've completed the full list
+      sessionData.lastProcessedChannelIndex = -1;
+      await this._saveSessionData(sessionData);
+      
+      // Update final report statistics
+      this.currentReport.totalChannelsProcessed = channels.length;
+      await this._saveReport();
+      
       console.log(`\nu2705 Support process complete! Supported ${supportCount} channels.`);
+      console.log(`Report saved to: ${this.currentReportPath}`);
       
       // Ask user if they want to restart the support process
       const restartSupport = await this._getInputWithTimeout('Restart support process? (y/n)', 10, 'y');
@@ -182,6 +371,16 @@ class SupportService {
    */
   async supportChannel(channel, settings, comments) {
     try {
+      // Create object to track all actions on this channel
+      const supportActions = {
+        videoFound: false,
+        videoPlayed: false,
+        commentPosted: false,
+        commentVerified: false,
+        liked: false,
+        subscribed: false,
+        watchTime: 0
+      };
       // Access the page directly from the browser service
       const page = this.browser.page;
       
@@ -224,6 +423,8 @@ class SupportService {
         console.log('Failed to find any videos on this channel.');
         return false;
       }
+      
+      supportActions.videoFound = true;
       
       console.log('Found video URL: ' + videoUrl);
       const latestVideo = { href: videoUrl, title: 'Latest video' };
@@ -269,69 +470,47 @@ class SupportService {
       });
       await this.sleep(1000);
       
-      // Verify we're at the beginning of the video
+      // Check if we're at the beginning of the video
       const videoPosition = await page.evaluate(() => {
         const video = document.querySelector('video.html5-main-video');
         return video ? video.currentTime : 0;
       });
       console.log(`Current video position: ${videoPosition} seconds`);
-      
-      if (videoPosition > 10) {
-        console.log('Warning: Video not starting from beginning! Attempting to correct...');
-        await page.evaluate(() => {
-          const video = document.querySelector('video.html5-main-video');
-          if (video) {
-            video.currentTime = 0;
+{{ ... }}
           }
         });
         await this.sleep(1000);
       }
+      
+      supportActions.videoPlayed = true;
+      
+      // Log video details to report
+      await this._logEvent(channel.name, 'video', {
+        title: videoDetails.title,
+        duration: videoDetails.durationSeconds,
+        durationText: videoDetails.durationText,
+        url: videoUrl,
+        targetWatchTime: targetWatchTime
+      });
       
       // Subscribe to the channel if enabled (do this first, most important)
       if (settings.subscribeToChannels) {
         console.log('Subscribing to the channel...');
         try {
           // Much more robust subscribe method
-          const subscribed = await page.evaluate(() => {
-            // Try multiple selector approaches
-            const selectors = [
-              'button[aria-label*="Subscribe"]',
-              'yt-button-renderer[aria-label*="Subscribe"]',
-              'ytd-subscribe-button-renderer',
-              '#subscribe-button' // Common container ID
-            ];
-            
-            for (const selector of selectors) {
-              const elements = document.querySelectorAll(selector);
-              for (const element of elements) {
-                if (element && element.offsetParent !== null) {
-                  try {
-                    // Trigger click event
-                    element.click();
-                    return true;
-                  } catch (e) {
-                    console.log('Failed to click, trying another element');
-                  }
-                }
-              }
-            }
-            return false;
-          });
-          
-          if (subscribed) {
-            console.log('Successfully subscribed to channel!');
-          } else {
-            console.log('Could not find subscribe button, might already be subscribed');
-          }
-        } catch (error) {
-          console.log(`Subscribe error: ${error.message}`);
-        }
-      }
+{{ ... }}
+      // Leave a comment early in the process
+      console.log('Leaving a comment early...');
+      const commentResult = await this.leaveComment(page, comments, channel.name);
+      console.log(`Comment result: ${commentResult.success ? 'Success' : 'Failed'} ${commentResult.verified ? '(Verified)' : ''}`);
       
-      // Like the video before scrolling for comments
+      // Update comment tracking
+      supportActions.commentPosted = commentResult.success;
+      supportActions.commentVerified = commentResult.verified || false;
+      
+      // Like the video if enabled (do this early too)
       if (settings.likeVideos) {
-        console.log('Attempting to like the video with precise selectors...');
-        
+        console.log('Liking the video...');
         try {
           // Make sure we're at the right position to see the video controls
           await page.evaluate(() => {
@@ -381,63 +560,71 @@ class SupportService {
           });
           
           console.log(likingResult.message);
-        } catch (error) {
-          console.log(`Error while liking video: ${error.message}`);
-        }
-      }
+          
+          if (likingResult.success) {
+            supportActions.liked = true;
+            await this._logEvent(channel.name, 'like', { success: true });
+          } else {
+            await this._logEvent(channel.name, 'like', { success: false, message: likingResult.message });
+          }
+{{ ... }}
       
-      // Now scroll down to comment section
-      console.log('Scrolling to comment section...');
-      await page.evaluate(() => {
-        // Scroll about halfway down the page to find comments
-        window.scrollBy(0, window.innerHeight);
-      });
-      await this.sleep(1500);
-      
-      // Leave a comment early in the process
-      console.log('Leaving a comment early...');
-      const commentSuccess = await this.leaveComment(page, comments);
-      
-      // Like the video if enabled (do this early too)
-      if (settings.likeVideos) {
-        console.log('Liking the video...');
-        try {
           const likeButton = await page.$('button[aria-label^="Like"][aria-pressed="false"]');
-      
+          
           if (likeButton) {
             await likeButton.click();
             console.log('Successfully liked the video!');
-          } else {
             console.log('Like button not found or already pressed, trying fallback...');
       
-            const liked = await page.evaluate(() => {
-              const likeSelectors = [
-                'button[aria-label*="like"]',
-                'ytd-toggle-button-renderer[aria-label*="like"]',
-                '#top-level-buttons-computed ytd-toggle-button-renderer:first-child',
-                'ytd-like-button-renderer'
-              ];
-              
-              for (const selector of likeSelectors) {
-                const elements = document.querySelectorAll(selector);
-                for (const element of elements) {
-                  const ariaPressed = element.getAttribute('aria-pressed');
-                  const visible = element.offsetHeight > 0 && element.offsetWidth > 0;
-      
-                  if (visible && (ariaPressed === null || ariaPressed === 'false')) {
-                    try {
-                      element.click();
-                      return true;
-                    } catch (e) {
-                      console.log('Failed to click like button, trying another');
-                    }
+            const subscribed = await page.evaluate(() => {
+            // Try multiple selector approaches
+            const selectors = [
+              'button[aria-label*="Subscribe"]',
+              'yt-button-renderer[aria-label*="Subscribe"]',
+              'ytd-subscribe-button-renderer',
+              '#subscribe-button' // Common container ID
+            ];
+            
+            for (const selector of selectors) {
+              const elements = document.querySelectorAll(selector);
+              for (const element of elements) {
+                if (element && element.offsetParent !== null) {
+                  try {
+                    // Trigger click event
+                    element.click();
+                    return true;
+                  } catch (e) {
+                    console.log('Failed to click, trying another element');
+                  }
+                }
+              }
+            }
+            return false;
+          });
+          
+          if (subscribed) {
+            console.log('Successfully subscribed to channel!');
+            supportActions.subscribed = true;
+            await this._logEvent(channel.name, 'subscribe', { success: true });
+          } else {
+            console.log('Could not find subscribe button, might already be subscribed');
+            await this._logEvent(channel.name, 'subscribe', { success: false, reason: 'Button not found or already subscribed' });
+          }          }
                   }
                 }
               }
               return false;
             });
+{{ ... }}
       
             console.log(liked ? 'Successfully liked the video (fallback).' : 'Like button not clickable or already liked.');
+            
+            if (liked) {
+              supportActions.liked = true;
+              await this._logEvent(channel.name, 'like', { success: true, method: 'fallback' });
+            } else {
+              await this._logEvent(channel.name, 'like', { success: false, message: 'Button not clickable or already liked' });
+            }
           }
         } catch (error) {
           console.log(`Like error: ${error.message}`);
@@ -546,6 +733,22 @@ class SupportService {
       }
       
       console.log('Finished watching video!');
+      
+      // Update the final watch time
+      supportActions.watchTime = elapsedSeconds;
+      
+      // Log support action summary to report
+      await this._logEvent(channel.name, 'summary', supportActions);
+      
+      // Return detailed success information to help with troubleshooting
+      console.log('\n=== Support Actions Summary ===');
+      console.log(`Video found: ${supportActions.videoFound ? 'Yes' : 'No'}`);
+      console.log(`Video played: ${supportActions.videoPlayed ? 'Yes' : 'No'}`);
+      console.log(`Comment posted: ${supportActions.commentPosted ? 'Yes' : 'No'}`);
+      console.log(`Comment verified: ${supportActions.commentVerified ? 'Yes' : 'No'}`);
+      console.log(`Liked video: ${supportActions.liked ? 'Yes' : 'No'}`);
+      console.log(`Subscribed: ${supportActions.subscribed ? 'Yes' : 'No'}`);
+      console.log(`Watch time: ${supportActions.watchTime} seconds`);
       
       return true;
     } catch (error) {
@@ -722,8 +925,10 @@ class SupportService {
    * Leave a comment on the video
    * @param {Object} page - Browser page
    * @param {Array<string>} comments - Array of comments
+   * @param {string} channelName - Name of the channel being supported
+   * @returns {Promise<Object>} Result with success status and details
    */
-  async leaveComment(page, comments) {
+  async leaveComment(page, comments, channelName) {
     try {
       // Get a random comment
       const randomIndex = Math.floor(Math.random() * comments.length);
@@ -740,7 +945,19 @@ class SupportService {
       
       // Find the comment input box
       const commentSelector = '#simplebox-placeholder, #commentbox'
-      await page.waitForSelector(commentSelector, { timeout: 5000 });
+      const commentBoxElement = await page.waitForSelector(commentSelector, { timeout: 5000 })
+        .catch(() => null);
+      
+      if (!commentBoxElement) {
+        const reason = "Could not find comment input box";
+        console.log(`❌ ${reason}`);
+        await this._logEvent(channelName, 'comment', {
+          comment,
+          success: false,
+          error: reason
+        });
+        return { success: false, reason };
+      }
       
       // Click the comment box to activate it
       await page.click(commentSelector);
@@ -749,7 +966,19 @@ class SupportService {
       
       // Find the editable comment area
       const commentTextSelector = '#contenteditable-root, .commentbox-input';
-      await page.waitForSelector(commentTextSelector, { timeout: 5000 });
+      const commentTextElement = await page.waitForSelector(commentTextSelector, { timeout: 5000 })
+        .catch(() => null);
+      
+      if (!commentTextElement) {
+        const reason = "Could not find editable comment area";
+        console.log(`❌ ${reason}`);
+        await this._logEvent(channelName, 'comment', {
+          comment,
+          success: false,
+          error: reason
+        });
+        return { success: false, reason };
+      }
       
       // Type the comment
       await page.type(commentTextSelector, comment);
@@ -758,29 +987,144 @@ class SupportService {
       
       // Find and click the comment submit button
       const submitButtonSelector = '#submit-button, .commentbox-submit';
-      await page.waitForSelector(submitButtonSelector, { timeout: 5000 });
+      const submitButton = await page.waitForSelector(submitButtonSelector, { timeout: 5000 })
+        .catch(() => null);
+      
+      if (!submitButton) {
+        const reason = "Could not find submit button";
+        console.log(`❌ ${reason}`);
+        await this._logEvent(channelName, 'comment', {
+          comment,
+          success: false,
+          error: reason
+        });
+        return { success: false, reason };
+      }
+      
       await page.click(submitButtonSelector);
+      console.log('Submitted comment, verifying success...');
       
-      console.log('Comment submitted successfully!');
+      // Wait a moment for the comment to be posted
+      await this.sleep(4000);
       
-      // Wait a bit for the comment to be posted
-      await this.sleep(3000);
+      // Verify if comment was actually posted
+      const wasCommentPosted = await page.evaluate((commentText) => {
+        // Look for the comment text in any comment elements
+        const commentElements = document.querySelectorAll('.comment-renderer-text-content, ytd-comment-renderer #content-text');
+        
+        for (const element of commentElements) {
+          // Even partial match is good evidence
+          if (element.textContent.includes(commentText.substring(0, Math.min(20, commentText.length)))) {
+            return true;
+          }
+        }
+        
+        // Check for confirmation notifications
+        const confirmElements = document.querySelectorAll('.ytd-comments-header-renderer');
+        for (const element of confirmElements) {
+          if (element.textContent.includes('Comment added') || 
+              element.textContent.includes('Your comment')) {
+            return true;
+          }
+        }
+        
+        return false;
+      }, comment.substring(0, Math.min(20, comment.length)));
+      
+      if (wasCommentPosted) {
+        console.log('✅ Comment verification: Comment was successfully posted!');
+        await this._logEvent(channelName, 'comment', {
+          comment,
+          success: true,
+          verified: true
+        });
+        return { success: true, verified: true };
+      } else {
+        // Check for common errors
+        const errorFound = await page.evaluate(() => {
+          const errorElements = document.querySelectorAll('.yt-alert-message, .ytd-alert-renderer');
+          for (const element of errorElements) {
+            if (element.textContent.includes('hold') || 
+                element.textContent.includes('review') || 
+                element.textContent.includes('error')) {
+              return element.textContent.trim();
+            }
+          }
+          return null;
+        });
+        
+        if (errorFound) {
+          console.log(`⚠️ Comment submitted but with notice: ${errorFound}`);
+          await this._logEvent(channelName, 'comment', {
+            comment,
+            success: true, 
+            verified: false,
+            notice: errorFound
+          });
+          return { success: true, verified: false, notice: errorFound };
+        } else {
+          console.log('⚠️ Comment submitted but verification failed (might be under review)');
+          await this._logEvent(channelName, 'comment', {
+            comment,
+            success: true,
+            verified: false
+          });
+          return { success: true, verified: false };
+        }
+      }
     } catch (error) {
-      console.error(`Error leaving comment: ${error.message}`);
+      console.error(`❌ Error leaving comment: ${error.message}`);
+      
+      // Log comment failure
+      if (this.currentReport) {
+        await this._logEvent(channelName, 'comment', {
+          comment: comments[Math.floor(Math.random() * comments.length)],
+          success: false,
+          error: error.message
+        });
+      }
+      
+      return { success: false, error: error.message };
     }
   }
   
   /**
    * Load channels from file
+   * @param {boolean} prioritizeLeastSupported - Whether to sort channels by least supported first
    * @returns {Promise<Array>} Channels array
    */
-  async loadChannels() {
+  async loadChannels(prioritizeLeastSupported = true) {
     try {
       if (!await fs.pathExists(this.channelsPath)) {
         return [];
       }
       
-      return await fs.readJson(this.channelsPath);
+      const channels = await fs.readJson(this.channelsPath);
+      
+      // Sort channels by least supported first if requested
+      if (prioritizeLeastSupported && channels.length > 0) {
+        // Make a copy to avoid modifying the original data
+        return [...channels].sort((a, b) => {
+          // Handle undefined supportCount
+          const countA = a.supportCount || 0;
+          const countB = b.supportCount || 0;
+          
+          // If support counts are equal, compare by last supported date
+          if (countA === countB) {
+            // If lastSupported doesn't exist, put it first
+            if (!a.lastSupported) return -1;
+            if (!b.lastSupported) return 1;
+            
+            // Otherwise, older date first
+            return new Date(a.lastSupported) - new Date(b.lastSupported);
+          }
+          
+          // Sort by support count (ascending)
+          return countA - countB;
+        });
+      }
+      
+      return channels;
     } catch (error) {
       console.error(`Error loading channels: ${error.message}`);
       return [];
