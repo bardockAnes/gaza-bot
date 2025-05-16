@@ -291,26 +291,76 @@ class SupportService {
       if (settings.subscribeToChannels) {
         console.log('Subscribing to the channel...');
         try {
-          // Much more robust subscribe method
+          // Add random delay before subscribing (more human-like behavior)
+          const preSubscribeDelay = Math.floor(Math.random() * 3000) + 1000; // 1-4 seconds
+          console.log(`Waiting ${preSubscribeDelay}ms before subscribing...`);
+          await this.sleep(preSubscribeDelay);
+          
+          // Scroll slightly to ensure subscribe button is in view
+          await page.evaluate(() => {
+            window.scrollTo({
+              top: Math.floor(Math.random() * 150) + 100, // Random position between 100-250px
+              behavior: 'smooth'
+            });
+          });
+          
+          await this.sleep(1000); // Wait for scroll to complete
+          
+          // More robust subscribe method with human-like behavior
           const subscribed = await page.evaluate(() => {
-            // Try multiple selector approaches
+            // Try multiple selector approaches for latest YouTube UI
             const selectors = [
+              '#subscribe-button ytd-subscribe-button-renderer',
+              '#subscribe-button button',
               'button[aria-label*="Subscribe"]',
               'yt-button-renderer[aria-label*="Subscribe"]',
               'ytd-subscribe-button-renderer',
-              '#subscribe-button' // Common container ID
+              '.ytd-video-secondary-info-renderer #subscribe-button',
+              'ytd-subscribe-button-renderer button'
             ];
             
+            // Helper function to simulate human-like click
+            const humanClick = (element) => {
+              // Random small delay before clicking (25-75ms)
+              const clickDelay = Math.floor(Math.random() * 50) + 25;
+              return new Promise(resolve => {
+                setTimeout(() => {
+                  try {
+                    // Check if already subscribed
+                    const isSubscribed = 
+                      element.getAttribute('subscribed') === 'true' ||
+                      element.getAttribute('aria-pressed') === 'true' ||
+                      element.getAttribute('aria-label')?.includes('Subscribed');
+                      
+                    if (isSubscribed) {
+                      resolve('already-subscribed');
+                      return;
+                    }
+                    
+                    // Click the element
+                    element.click();
+                    resolve('clicked');
+                  } catch (e) {
+                    resolve('failed');
+                  }
+                }, clickDelay);
+              });
+            };
+            
+            // Try each selector
             for (const selector of selectors) {
               const elements = document.querySelectorAll(selector);
               for (const element of elements) {
                 if (element && element.offsetParent !== null) {
-                  try {
-                    // Trigger click event
-                    element.click();
-                    return true;
-                  } catch (e) {
-                    console.log('Failed to click, trying another element');
+                  // Only consider visible elements
+                  const rect = element.getBoundingClientRect();
+                  const isVisible = rect.width > 0 && rect.height > 0 &&
+                    window.getComputedStyle(element).visibility !== 'hidden';
+                  
+                  if (isVisible) {
+                    const result = humanClick(element);
+                    if (result === 'clicked') return true;
+                    if (result === 'already-subscribed') return 'already';
                   }
                 }
               }
@@ -318,10 +368,14 @@ class SupportService {
             return false;
           });
           
-          if (subscribed) {
+          if (subscribed === true) {
             console.log('Successfully subscribed to channel!');
+            // Add a small delay after subscribing (more natural)
+            await this.sleep(Math.floor(Math.random() * 1500) + 500);
+          } else if (subscribed === 'already') {
+            console.log('Already subscribed to this channel');
           } else {
-            console.log('Could not find subscribe button, might already be subscribed');
+            console.log('Could not find subscribe button');
           }
         } catch (error) {
           console.log(`Subscribe error: ${error.message}`);
@@ -330,50 +384,90 @@ class SupportService {
       
       // Like the video before scrolling for comments
       if (settings.likeVideos) {
-        console.log('Attempting to like the video with precise selectors...');
+        console.log('Attempting to like the video with human-like behavior...');
         
         try {
-          // Make sure we're at the right position to see the video controls
+          // Add random delay before liking (more human-like behavior)
+          const preLikeDelay = Math.floor(Math.random() * 2500) + 2000; // 2-4.5 seconds
+          console.log(`Watching video for ${preLikeDelay}ms before liking...`);
+          await this.sleep(preLikeDelay);
+          
+          // Make sure we're at the right position to see the video controls with smooth scrolling
           await page.evaluate(() => {
-            // Scroll to position where like button should be visible but not into comments
-            window.scrollTo(0, 200);
+            // Use smooth scrolling with random position (more human-like)
+            window.scrollTo({
+              top: Math.floor(Math.random() * 100) + 150, // Random position between 150-250px
+              behavior: 'smooth'
+            });
           });
           
-          // Wait for the like button to appear, using the specific selectors you requested
-          await page.waitForSelector('button[title="I like this"], button[aria-label^="like this video"], button[aria-label^="Like"], ytd-toggle-button-renderer[aria-label^="Like"]', 
+          // Wait for scroll to complete
+          await this.sleep(Math.floor(Math.random() * 500) + 500); // 500-1000ms
+          
+          // Wait for the like button to appear with more current selectors
+          await page.waitForSelector('#top-level-buttons-computed ytd-toggle-button-renderer:first-child, button[aria-label*="like"], ytd-segmented-like-dislike-button-renderer button:first-child', 
             { visible: true, timeout: 5000 }).catch(() => {});
             
-          // Small delay for UI to stabilize
-          await this.sleep(1000);
+          // Small delay for UI to stabilize with randomness
+          await this.sleep(Math.floor(Math.random() * 800) + 700); // 700-1500ms
           
-          // Check if already liked and click only if not already liked
+          // Check if already liked and click only if not already liked with human-like behavior
           const likingResult = await page.evaluate(() => {
-            // Try multiple selectors focused on exact attributes
+            // Try multiple selectors focused on current YouTube UI
             const likeButtonSelectors = [
+              // Latest YouTube UI selectors first
+              'ytd-segmented-like-dislike-button-renderer button:first-child',
+              '#segmented-like-button button',
+              '#top-level-buttons-computed ytd-toggle-button-renderer:first-child button',
+              'button[aria-label*="Like"]',
+              'button[aria-label*="like this video"]',
               'button[title="I like this"]',
-              'button[aria-label^="like this video"]',
-              'button[aria-label^="Like"]',
-              'ytd-toggle-button-renderer[aria-label^="Like"]',
-              '#top-level-buttons-computed ytd-toggle-button-renderer:first-child button'
+              'ytd-toggle-button-renderer[aria-label*="Like"]'
             ];
             
+            // Helper function to simulate human-like click with random delays
+            const humanLikeClick = (button) => {
+              // Random small delay before clicking (50-150ms)
+              const clickDelay = Math.floor(Math.random() * 100) + 50;
+              return new Promise(resolve => {
+                setTimeout(() => {
+                  try {
+                    // Check multiple properties for 'already liked' state
+                    const isAlreadyLiked = 
+                      button.getAttribute('aria-pressed') === 'true' ||
+                      button.classList.contains('style-default-active') ||
+                      button.classList.contains('ytd-toggle-button-renderer-activated') ||
+                      button.getAttribute('aria-label')?.includes('Remove like');
+                      
+                    if (isAlreadyLiked) {
+                      resolve({ success: true, message: 'Video is already liked' });
+                      return;
+                    }
+                    
+                    // Click with a try-catch to handle any issues
+                    button.click();
+                    resolve({ success: true, message: 'Successfully liked the video' });
+                  } catch (e) {
+                    resolve({ success: false, message: `Click failed: ${e.message}` });
+                  }
+                }, clickDelay);
+              });
+            };
+            
+            // Try each selector
             for (const selector of likeButtonSelectors) {
               const buttons = document.querySelectorAll(selector);
               for (const button of buttons) {
-                // Critical: Check if button is already pressed/liked
-                const isAlreadyLiked = button.getAttribute('aria-pressed') === 'true';
-                const isVisible = button.offsetWidth > 0 && button.offsetHeight > 0;
+                // More thorough visibility check
+                const rect = button.getBoundingClientRect();
+                const computedStyle = window.getComputedStyle(button);
+                const isVisible = rect.width > 0 && rect.height > 0 &&
+                  button.offsetParent !== null &&
+                  computedStyle.visibility !== 'hidden' &&
+                  computedStyle.display !== 'none';
                 
-                if (isVisible && !isAlreadyLiked) {
-                  // Only click if not already liked
-                  try {
-                    button.click();
-                    return { success: true, message: `Clicked ${selector}` };
-                  } catch (e) {
-                    // Continue to next button if this one fails
-                  }
-                } else if (isVisible && isAlreadyLiked) {
-                  return { success: true, message: 'Video is already liked' };
+                if (isVisible) {
+                  return humanLikeClick(button);
                 }
               }
             }
@@ -381,6 +475,11 @@ class SupportService {
           });
           
           console.log(likingResult.message);
+          
+          // Add a natural delay after liking
+          if (likingResult.success) {
+            await this.sleep(Math.floor(Math.random() * 1000) + 500); // 500-1500ms
+          }
         } catch (error) {
           console.log(`Error while liking video: ${error.message}`);
         }

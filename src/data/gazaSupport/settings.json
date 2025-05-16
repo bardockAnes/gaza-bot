@@ -1,5 +1,5 @@
 {
-  "watchTimePercentage": 100,
+  "watchTimePercentage": 10,
   "minWatchTimeSeconds": 60,
   "maxWatchTimeSeconds": 1800,
   "likeVideos": true,
