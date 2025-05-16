@@ -1,0 +1,8 @@
+{
+  "watchTimePercentage": 100,
+  "minWatchTimeSeconds": 60,
+  "maxWatchTimeSeconds": 1800,
+  "likeVideos": true,
+  "subscribeToChannels": true,
+  "pauseBetweenChannelsSeconds": 10
+}
