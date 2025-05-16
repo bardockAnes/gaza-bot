@@ -122,13 +122,37 @@ class EngagementService {
   }
   
   /**
-   * Get a random comment from the comments array
+   * Get the next comment using rotation settings
    * @param {Array<string>} comments - Array of comments
-   * @returns {string} A random comment
+   * @param {Object} settings - Support settings
+   * @returns {Object} The selected comment and updated index
    */
-  getRandomComment(comments) {
-    const randomIndex = Math.floor(Math.random() * comments.length);
-    return comments[randomIndex];
+  getNextComment(comments, settings) {
+    // Default to random selection if rotation is disabled
+    if (!settings.rotateComments) {
+      const randomIndex = Math.floor(Math.random() * comments.length);
+      return { 
+        comment: comments[randomIndex], 
+        index: randomIndex, 
+        isRotated: false 
+      };
+    }
+
+    // Get the starting index based on rotation settings
+    let nextIndex = 0;
+    if (settings.lastCommentIndex >= 0) {
+      // Move to the next comment in the rotation
+      nextIndex = (settings.lastCommentIndex + 1) % comments.length;
+    }
+    
+    const comment = comments[nextIndex];
+    console.log(`Using comment #${nextIndex+1}/${comments.length} (rotating)`);
+    
+    return {
+      comment,
+      index: nextIndex,
+      isRotated: true
+    };
   }
   
   /**

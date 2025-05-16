@@ -128,10 +128,29 @@ class SupportService {
       
       // Start supporting channels
       let supportCount = 0;
-      for (const channel of channels) {
+      
+      // Get the starting index based on rotation settings
+      let startIndex = 0;
+      if (settings.rotateChannels && settings.lastChannelIndex >= 0) {
+        // Start from the channel after the last supported one
+        startIndex = (settings.lastChannelIndex + 1) % channels.length;
+        console.log(`\nStarting from channel index ${startIndex} (continuing from last session)`);
+      } else {
+        console.log('\nStarting from the first channel');
+      }
+      
+      // Reorder channels array to start from the calculated index
+      const reorderedChannels = [...channels.slice(startIndex), ...channels.slice(0, startIndex)];
+      console.log(`Channel rotation order: ${reorderedChannels.map(c => c.name).join(' → ')}
+`);
+      
+      for (let i = 0; i < reorderedChannels.length; i++) {
+        const channel = reorderedChannels[i];
+        const originalIndex = channels.findIndex(c => c.id === channel.id);
+        
         // Show current channel
         console.clear();
-        console.log(`\nu27a1ufe0f Supporting channel: ${channel.name}`);
+        console.log(`\n➡️ Supporting channel: ${channel.name} (${i+1}/${reorderedChannels.length})`);
         console.log(`Channel URL: ${channel.url}`);
         console.log(`Previous support count: ${channel.supportCount || 0}`);
         
@@ -147,7 +166,29 @@ class SupportService {
           // Save updated channel data
           await this.dataService.saveChannels(channels);
           
-          console.log(`\nu2705 Successfully supported ${channel.name}!`);
+          // Update lastChannelIndex and lastCommentIndex in settings and save
+          let settingsUpdated = false;
+
+          if (settings.rotateChannels) {
+            settings.lastChannelIndex = originalIndex;
+            settingsUpdated = true;
+            console.log(`Updated last channel index to ${originalIndex} (${channel.name})`);
+          }
+
+          // Check if comment index was updated
+          if (settings._commentIndexUpdated) {
+            settingsUpdated = true;
+            console.log(`Updated last comment index to ${settings.lastCommentIndex}`);
+            // Remove the temporary flag
+            delete settings._commentIndexUpdated;
+          }
+
+          // Save settings if anything was updated
+          if (settingsUpdated) {
+            await this.dataService.saveSettings(settings);
+          }
+          
+          console.log(`\n✅ Successfully supported ${channel.name}!`);
         } else {
           console.log(`\nu274c Failed to support ${channel.name}.`);
         }
@@ -252,9 +293,16 @@ class SupportService {
         await this.engagementService.likeVideo(page);
       }
       
-      // Leave a comment
-      const randomComment = this.engagementService.getRandomComment(comments);
-      await this.engagementService.leaveComment(page, randomComment);
+      // Leave a comment using rotation system
+      const commentResult = this.engagementService.getNextComment(comments, settings);
+      await this.engagementService.leaveComment(page, commentResult.comment);
+      
+      // Update lastCommentIndex in settings if using rotation
+      if (commentResult.isRotated) {
+        settings.lastCommentIndex = commentResult.index;
+        // Flag that we need to save settings
+        settings._commentIndexUpdated = true;
+      }
       
       // Watch the video
       await this.videoService.watchVideo(page, watchTime);

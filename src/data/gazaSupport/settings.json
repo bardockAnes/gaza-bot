@@ -1,8 +1,12 @@
 {
-  "watchTimePercentage": 10,
+  "watchTimePercentage": 100,
   "minWatchTimeSeconds": 60,
   "maxWatchTimeSeconds": 1800,
-  "likeVideos": false,
-  "subscribeToChannels": false,
-  "pauseBetweenChannelsSeconds": 10
+  "likeVideos": true,
+  "subscribeToChannels": true,
+  "pauseBetweenChannelsSeconds": 10,
+  "lastChannelIndex": 8,
+  "rotateChannels": true,
+  "lastCommentIndex": -1,
+  "rotateComments": true
 }
