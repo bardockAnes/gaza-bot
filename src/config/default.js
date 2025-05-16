@@ -25,9 +25,9 @@ module.exports = {
       '--disable-notifications', // Block notification prompts
       
       // Anti-throttling settings for background tabs
-      '--disable-background-timer-throttling',    // Prevent timers from being throttled in background tabs
-      '--disable-backgrounding-occluded-windows', // Prevent backgrounding when tab is not visible
-      '--disable-renderer-backgrounding'          // Prevent renderer from being throttled when in background
+    //   '--disable-background-timer-throttling',    // Prevent timers from being throttled in background tabs
+    //   '--disable-backgrounding-occluded-windows', // Prevent backgrounding when tab is not visible
+    //   '--disable-renderer-backgrounding'          // Prevent renderer from being throttled when in background
     ],
     
     // Default arguments to ignore
@@ -40,11 +40,11 @@ module.exports = {
     },
     
     // Background keep-alive settings
-    backgroundKeepAlive: {
-      enabled: true,     // Whether to enable the background keep-alive mechanism
-      interval: 5000,    // Interval in ms to perform keep-alive actions (5 seconds)
-      focusEvents: true  // Whether to dispatch focus events to keep page active
-    }
+    // backgroundKeepAlive: {
+    //   enabled: true,     // Whether to enable the background keep-alive mechanism
+    //   interval: 5000,    // Interval in ms to perform keep-alive actions (5 seconds)
+    //   focusEvents: true  // Whether to dispatch focus events to keep page active
+    // }
   },
   
   /**
